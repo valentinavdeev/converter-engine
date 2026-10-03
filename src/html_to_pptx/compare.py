@@ -6,7 +6,7 @@ For each HTML file:
   3. Convert PPTX -> PDF via LibreOffice, then PDF pages -> PNGs
   4. Create side-by-side comparison images (HTML left, PPTX right)
 
-Requires the ``compare`` extra: ``pip install html-to-pptx[compare]``
+Requires the ``compare`` extra: ``pip install '.[compare]'``
 and LibreOffice (``soffice``) on PATH for PPTX-to-PNG rendering.
 
 Usage::
@@ -24,6 +24,7 @@ import logging
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -35,19 +36,21 @@ SLIDE_HEIGHT_PX = 1080
 async def screenshot_html_slides(html_path: Path, out_dir: Path) -> list[Path]:
     """Screenshot each <section class="slide"> in the HTML file."""
     from playwright.async_api import async_playwright
+    from html_to_pptx.converter import _SLIDE_IMAGES_JS, _SLIDE_STATE_JS
 
-    abs_path = str(html_path.resolve())
+    source_uri = html_path.resolve().as_uri()
     screenshots: list[Path] = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page(
             viewport={"width": SLIDE_WIDTH_PX, "height": SLIDE_HEIGHT_PX},
+            service_workers="block",
         )
-        await page.goto(
-            f"file://{abs_path}", wait_until="networkidle", timeout=30_000,
-        )
-        await page.wait_for_timeout(1000)
+        await page.route("http://**/*", lambda route: route.abort())
+        await page.route("https://**/*", lambda route: route.abort())
+        await page.goto(source_uri, wait_until="networkidle", timeout=30_000)
+        await page.evaluate("() => document.fonts.ready")
 
         slide_count = await page.evaluate(
             "document.querySelectorAll('.slide').length"
@@ -57,22 +60,28 @@ async def screenshot_html_slides(html_path: Path, out_dir: Path) -> list[Path]:
             await browser.close()
             return screenshots
 
-        for i in range(slide_count):
-            await page.evaluate(
-                """(idx) => {
-                    document.querySelectorAll('.slide').forEach((s, i) => {
-                        s.style.display = i === idx ? 'flex' : 'none';
-                        if (i === idx) s.classList.add('active');
-                        else s.classList.remove('active');
-                    });
-                }""",
-                i,
-            )
-            await page.wait_for_timeout(200)
-
-            out_path = out_dir / f"html_slide_{i}.png"
-            await page.screenshot(path=str(out_path), full_page=False)
-            screenshots.append(out_path)
+        state = await page.evaluate_handle(
+            "() => {" + _SLIDE_STATE_JS +
+            "return captureSlideState(document.querySelectorAll('.slide'));}"
+        )
+        try:
+            for i in range(slide_count):
+                await state.evaluate("(state, index) => state.show(index)", i)
+                await page.evaluate(
+                    "async index => {" + _SLIDE_IMAGES_JS +
+                    "await new Promise(requestAnimationFrame);"
+                    "const slide = document.querySelectorAll('.slide')[index];"
+                    "await Promise.all(participatingSlideImages(slide).map(image => image.decode()));"
+                    "}", i,
+                )
+                out_path = out_dir / f"html_slide_{i}.png"
+                await page.locator(".slide").nth(i).screenshot(path=str(out_path))
+                screenshots.append(out_path)
+        finally:
+            try:
+                await state.evaluate("state => state.restore()")
+            finally:
+                await state.dispose()
 
         await browser.close()
 
@@ -90,11 +99,13 @@ def pptx_to_pngs(pptx_path: Path, out_dir: Path) -> list[Path]:
         )
         return []
 
-    result = subprocess.run(
-        [soffice, "--headless", "--convert-to", "pdf",
-         "--outdir", str(out_dir), str(pptx_path)],
-        capture_output=True, text=True, timeout=60,
-    )
+    with tempfile.TemporaryDirectory(prefix="converter-engine-lo-") as profile:
+        result = subprocess.run(
+            [soffice, f"-env:UserInstallation={Path(profile).as_uri()}",
+             "--headless", "--convert-to", "pdf",
+             "--outdir", str(out_dir), str(pptx_path)],
+            capture_output=True, text=True, timeout=60,
+        )
     if result.returncode != 0:
         logger.error("LibreOffice PPTX->PDF failed:\n%s", result.stderr)
         return []
@@ -108,7 +119,7 @@ def pptx_to_pngs(pptx_path: Path, out_dir: Path) -> list[Path]:
         import fitz  # PyMuPDF
     except ImportError:
         logger.error(
-            "PyMuPDF not installed. Run: pip install html-to-pptx[compare]"
+            "PyMuPDF not installed. Install this checkout with the compare extra."
         )
         return []
 
@@ -193,8 +204,6 @@ async def process_file(
 
     name = html_path.stem
     sample_out = output_dir / name
-    if sample_out.exists():
-        shutil.rmtree(sample_out)
     sample_out.mkdir(parents=True)
 
     logger.info("\n=== %s ===", html_path.name)

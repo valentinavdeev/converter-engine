@@ -1,213 +1,169 @@
-# html-to-pptx
+# converter-engine
 
-Convert HTML slide decks into editable PowerPoint files.
+A maintained fork of [Design-Arena/html-to-pptx](https://github.com/Design-Arena/html-to-pptx), based on upstream commit `3b54c7ffb02b453ac85222d7c7ac9024d6677614`.
 
-Unlike screenshot-based approaches that produce flat images, `html-to-pptx` measures every DOM element in a headless browser and maps it to a native PPTX shape — text boxes you can edit, images you can resize, backgrounds you can restyle. The output is a real presentation, not a picture of one.
+Converts a constrained HTML slide format into editable PowerPoint text, shapes and images. Chromium measures layout; `python-pptx` writes OOXML. This is **not** a general-purpose browser-to-PowerPoint renderer and does not promise pixel-identical output across Office applications.
 
-## Install
+Distribution name: `converter-engine`. Python import: `html_to_pptx`. Commands: `html-to-pptx` and `html-to-pptx-compare`.
 
-```bash
-pip install html-to-pptx
+## Install from source
+
+The fidelity changes are proposed on `fix/html-pptx-fidelity`; until its PR is merged, use that branch rather than the fork's unchanged `main`.
+
+```sh
+git clone --branch fix/html-pptx-fidelity https://github.com/valentinavdeev/converter-engine.git
+cd converter-engine
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install '.[compare]'
 python -m playwright install chromium
 ```
 
-## Quick start
+Python 3.10+ is required. Dependencies and Chromium must be installed explicitly; conversion does not install them. No PyPI release is implied by the distribution name. The upstream MIT license and Design Arena attribution are preserved.
 
-### CLI
+## Convert
 
-```bash
+```sh
 html-to-pptx deck.html deck.pptx
 ```
-
-### Python
 
 ```python
 import asyncio
 from html_to_pptx import convert
 
-asyncio.run(convert("deck.html", "deck.pptx"))
+asyncio.run(convert('deck.html', 'deck.pptx'))
 ```
 
-### Two-stage API
+Input/output aliases are rejected to protect the HTML source. An existing, distinct output PPTX may be replaced. Local `<img>` sources are embedded in memory without rewriting the HTML. Fonts and images are awaited before measurement. HTTP(S) resources are blocked: provide local fonts and local or embedded images. Convert trusted HTML; network restrictions are not a security sandbox for arbitrary documents.
 
-For more control, separate the measurement and rendering steps:
+### Two-stage API and existing browsers
 
 ```python
 import asyncio
 from html_to_pptx import extract_measurements, render_pptx
 
 async def main():
-    # Stage 1: measure DOM elements in a headless browser
-    measurements = await extract_measurements("deck.html")
-
-    # Stage 2: render measurements to python-pptx shapes
-    prs = render_pptx(measurements)
-
-    # Modify the presentation before saving
-    prs.slides[0].shapes[0].text = "Custom title"
-    prs.save("deck.pptx")
+    measurements = await extract_measurements('deck.html')
+    render_pptx(measurements).save('deck.pptx')
 
 asyncio.run(main())
 ```
 
-## HTML format
+For a host that already provides Chromium:
 
-Your HTML file should contain `<section class="slide">` elements at a 1920×1080 canvas:
+```sh
+html-to-pptx --extract-js
+html-to-pptx --measurements measurements.json deck.pptx
+```
+
+Execute the printed function in the browser after fonts/images load and serialize its return value as JSON. The measurement function alone does not read local image bytes or rasterize SVG: supply `data:image/...` image sources in the DOM and rasterized SVG data when using this route. The full Python extraction path performs these preparation steps. Measurement JSON can contain embedded document images; treat it as document data, not public diagnostic output.
+
+## HTML input profile
+
+Use a fixed 1920×1080 CSS-pixel canvas per `.slide`. The resulting PPTX is 13⅓×7.5 inches (16:9). The profile constrains exportable features, not the artistic arrangement of slides.
 
 ```html
-<!DOCTYPE html>
-<html>
+<!doctype html>
+<html lang="en">
 <head>
+<meta charset="utf-8">
 <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #000; overflow: hidden; }
-    .slide {
-        width: 1920px;
-        height: 1080px;
-        display: none;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        font-family: sans-serif;
-    }
-    .slide.active { display: flex; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  .slide {
+    width: 1920px; height: 1080px; position: relative;
+    display: none; flex-direction: column; justify-content: center;
+    padding: 100px; background: white; font-family: Arial, sans-serif;
+  }
+  .slide.active { display: flex; }
+  .card { background: #edf4fa; border-radius: 24px; padding: 40px; }
+  h1 { font-size: 64px; line-height: 1.1; }
+  p { font-size: 32px; line-height: 1.4; }
 </style>
 </head>
 <body>
-
-<section class="slide active" style="background-color: #1e293b;">
-    <h1 style="font-size: 64px; color: #f8fafc;">Hello World</h1>
+<section class="slide active">
+  <div class="card" role="group" aria-label="Introduction">
+    <h1>An editable presentation</h1>
+    <p>Keep the source HTML and review the actual PPTX render.</p>
+  </div>
 </section>
-
-<section class="slide" style="background-color: #ffffff;">
-    <p style="font-size: 24px; color: #334155;">Second slide</p>
-</section>
-
 </body>
 </html>
 ```
 
-See [`examples/demo.html`](examples/demo.html) for a full five-slide deck.
+- Normal block, flex and grid layout are measured in the browser. Slide activation preserves authored display rules; it does not force every slide into flex. Prefer a shallow tree and explicit dimensions where they matter.
+- Absolute positioning is supported, but do not assume a tightly measured browser text box has identical Office metrics.
+- Text remains native. Authored sizes are retained instead of automatically shrinking them. The representable range is 1–4000pt (2–8000 CSS px at this slide scale); out-of-range sizes fail with element/run context instead of silently clamping. Fix overflow in HTML; changing text inside PowerPoint does not rerun HTML layout.
+- CSS tracking, preformatted spaces/line breaks, mixed inline text and basic alignment are retained. Use fonts installed in both the browser environment and the target viewer; family substitutions remain, fonts are not embedded automatically.
+- `role="group"` or `data-pptx-group` marks a native component group. `aria-label` or `data-pptx-group` supplies its name. Ordinary layout wrappers do not automatically become groups.
+- Positive fractional-size rules are retained. Uniform rounded rectangles and equal rounded top corners with square bottoms have native geometry.
+- Solid fills, borders and supported linear gradients retain native alpha. Overlays are not automatically baked into underlying images. Default Office theme shadows are disabled; a simple authored outer shadow is supported.
+- 2D rotations account for CSS `transform-origin`; skew/reflection/3D transforms are rejected. Arbitrary transformations are not supported.
+- Local/base64 `<img>` sources become pictures. Local/embedded SVG image sources, inline SVG and conic gradients become raster images, not editable vector diagrams. Hidden/outside-slide image placeholders are ignored; images on initially inactive exported slides are prepared after activation. `background-image: url(...)` is unsupported.
 
-## What gets converted
+### Linear gradients
 
-| HTML feature | PPTX output |
-|---|---|
-| Text with fonts, colors, weight, style | Editable text boxes with matching font properties |
-| **Font substitution** (web fonts like Inter, Playfair, Roboto) | Mapped to a metric-compatible, install-safe font in the **same family** so headings don't reflow |
-| **Single-line fit** | One-line headings/pills/buttons never wrap — the point size auto-shrinks to fit the box |
-| **CSS `line-height`** | Exact paragraph line spacing (multi-line headings keep their height) |
-| **CSS padding** | Reproduced as text-frame insets (bulleted/labelled text aligns correctly) |
-| **Text/box/gradient alpha** | Flattened over the correct backdrop (nearest ancestor bg), so translucency renders in every viewer |
-| **Translucent image overlays / scrims** | Baked into the underlying image so the photo stays visible |
-| **Mixed inline content** (`<p>text <strong>bold</strong> more</p>`) | Multi-run paragraphs with per-run styling |
-| **CSS linear-gradient backgrounds** | OOXML gradient fills with angle and stop positions |
-| **CSS `conic-gradient`** (pies/donuts) | Rasterized to a picture with true segments |
-| **Gradient text** (`-webkit-background-clip: text`) | Gradient text fill with a solid first-stop fallback |
-| **Inline `<svg>` elements** | Rasterized to PNG via Playwright screenshot |
-| **HTML tables** (`<table>`) | Cell-accurate text with per-column alignment preserved |
-| Background colors | Solid fills (with alpha flattening) |
-| Rounded corners (`border-radius`, including `%`) | OOXML adjustment guides on rounded rectangles |
-| **Rounded images** (`border-radius` on `<img>` or wrapper) | Rounded-rect geometry swap on picture shapes |
-| **`object-fit: cover`** | Centered crop (no distortion) instead of stretching |
-| Base64-embedded images (`data:image/...`) | Native picture shapes |
-| Borders (with alpha) | Shape outlines with color, width, and opacity |
-| **Left/top accent bars** (`border-left`, `::before` strips) | Rounded to match the card's corners (offset under-component) |
-| **`transform: rotate()`** | Shape rotation about the element center |
-| **`writing-mode: vertical-*`** | Vertical PPTX text body |
-| **Flex/grid alignment** (`justify-content`, `align-items`) | Horizontal + vertical text anchoring |
-| `text-transform` (uppercase, etc.) | Transformed text content |
-| Hyperlinks | Preserved on text runs |
-| Ordered/unordered lists (incl. custom bullet dots) | Bullet/number prefixes and decorative markers |
-| **CSS `::before`/`::after` pseudo-elements** | Synthetic shapes for decorative accents |
-| **`white-space: pre`** (terminals/code) | Preserved line breaks and indentation |
-| **RTL text direction** | Correct paragraph alignment |
-| **`<br>` tags in inline runs** | Multi-paragraph text frames |
-| Element opacity (incl. inherited) | OOXML alpha / picture transparency |
+Supported: a single linear gradient with computed RGB/RGBA colors (comma or space/slash syntax), `transparent`, percentage positions, omitted positions, two positions per color, repeated stops/hard transitions, degree angles and directional keywords. Missing positions interpolate between anchors; decreasing positions follow CSS fixup. Stops outside 0–100% are clipped with alpha-aware boundary colors.
 
-## How it works
+Not supported: pixel/other length positions, `calc()`, interpolation hints, non-RGB color spaces, non-degree angle units, radial or multi-layer gradients. Unsupported linear syntax falls back to an existing solid background rather than inventing evenly spaced stops. This module is not a comprehensive CSS validator: do not interpret successful export as proof that every authored effect was reproduced.
 
-```
-HTML file
-    │
-    ▼
-┌─────────────────────────┐
-│  Headless Chromium       │  ← Playwright loads the HTML at 1920×1080
-│  (Playwright)            │
-│                          │
-│  For each .slide:        │
-│  • Show slide in isolation│
-│  • Clear CSS transforms  │
-│  • Measure every visible │
-│    element recursively:  │
-│    position, size, color,│
-│    font, text, images    │
-└───────────┬─────────────┘
-            │
-            ▼
-    Measurement tree (JSON)
-            │
-            ▼
-┌─────────────────────────┐
-│  python-pptx renderer    │
-│                          │
-│  For each element:       │
-│  • Text leaf → text box  │
-│  • Image → picture shape │
-│  • Background → rectangle│
-│  • Border → outline/shape│
-│                          │
-│  Coordinates:            │
-│  CSS px → inches using   │
-│  13.333/1920 ratio       │
-└───────────┬─────────────┘
-            │
-            ▼
-      Editable .pptx
+### Remaining limitations
+
+- Complex `z-index`/stacking contexts, filters and pseudo-element transforms are not fully reproduced.
+- Group opacity multiplies member alpha, rather than isolated CSS subtree compositing; overlapping translucent descendants may differ.
+- Arbitrary four-corner/elliptical radii, advanced inline baseline shifts, tab-stop metrics and vertical text layout are not universally reproduced.
+- Animations and transitions are not exported.
+- Font substitution and Office rendering can change text geometry. A real PPTX render is required; browser screenshots and XML assertions alone are insufficient.
+
+## Visual comparison
+
+Requires LibreOffice on `PATH` and the `compare` extra:
+
+```sh
+html-to-pptx-compare tests/fixtures/fidelity.html -o results
 ```
 
-## Visual comparison tool
+This produces source HTML screenshots, a PPTX, LibreOffice PDF/PNG renders and side-by-side comparisons under `results/fidelity/`. The output subdirectory must not already exist: the tool will not recursively delete an existing directory. LibreOffice uses a separate temporary profile, not a user's active profile.
 
-Verify conversion quality with side-by-side comparisons:
+Both `examples/demo.html` and `tests/fixtures/fidelity.html` are synthetic examples. Do not commit private slide decks, source images, measurement JSON or rendered customer documents.
 
-```bash
-pip install html-to-pptx[compare]
-html-to-pptx-compare deck.html -o results/
-```
+## Changes relative to upstream
 
-This screenshots the original HTML, converts to PPTX, renders the PPTX back to images via LibreOffice, and creates side-by-side comparison PNGs. Requires [LibreOffice](https://www.libreoffice.org/) on PATH.
+Bug fixes address:
 
-Output structure:
-```
-results/deck/
-├── html_slide_0.png      # ground truth (HTML screenshot)
-├── html_slide_1.png
-├── pptx_slide_0.png      # converter output (PPTX rendered via LibreOffice)
-├── pptx_slide_1.png
-├── compare_slide_0.png   # side-by-side comparison
-├── compare_slide_1.png
-└── output.pptx           # the generated file
-```
+- [#4](https://github.com/Design-Arena/html-to-pptx/issues/4): significant preformatted boundary spaces;
+- [#5](https://github.com/Design-Arena/html-to-pptx/issues/5): discarded thin geometry;
+- [#6](https://github.com/Design-Arena/html-to-pptx/issues/6): lost text tracking;
+- [#7](https://github.com/Design-Arena/html-to-pptx/issues/7): discarded gradient stop positions;
+- [#2](https://github.com/Design-Arena/html-to-pptx/issues/2): unauthored theme shadows (upstream also has [PR #3](https://github.com/Design-Arena/html-to-pptx/pull/3)).
 
-## Limitations
-
-- **External images** are not fetched — use base64 `data:` URIs for embedded images
-- **CSS `background-image: url(...)`** on containers is not converted — only `<img>` tags with base64 `src` and inline `<svg>` elements become picture shapes
-- **Radial / multi-layered gradients** are not drawn — they fall back to the solid background color (single `linear-gradient` and `conic-gradient` are supported)
-- **Animations and transitions** are not represented in PPTX
-- **Font availability** — web fonts are mapped to a metric-compatible font in the same family (serif→Georgia, humanist sans→Segoe UI, geometric sans→Century Gothic, mono→Consolas, …). For pixel-exact display type, embed the font in PowerPoint yourself
-- **Complex CSS layouts** (grid, advanced flexbox) are measured as-rendered, but deeply nested layouts may lose some positioning precision
+Native alpha, explicit groups, authored font-size preservation and noncentral rotation origins are deliberate fork choices/extensions, not claims that the upstream's documented behavior was accidental. The changes are reviewed through a PR in this fork; no automatic merge or upstream PR submission is implied.
 
 ## Development
 
-```bash
-git clone https://github.com/Design-Arena/html-to-pptx.git
-cd html-to-pptx
-pip install -e ".[dev]"
+```sh
+python -m pip install -e '.[dev]'
 python -m playwright install chromium
 pytest -v
+html-to-pptx tests/fixtures/fidelity.html /tmp/fidelity.pptx
 ```
+
+For a browser installation contained inside the virtual environment, set `PLAYWRIGHT_BROWSERS_PATH=0` both during `playwright install` and while running tests/commands. CI tests Python 3.10–3.13, exercises the installed CLI and builds the package. It does not certify Microsoft PowerPoint rendering. PyPI publication automation is intentionally absent.
+
+### Local verification — 2026-10-03
+
+- Python 3.12: 65 tests passed, including real Chromium extraction and saved-PPTX regressions.
+- Editable installation and sdist/wheel builds succeeded.
+- The installed comparison CLI converted the one-slide fidelity fixture and the five-slide upstream demo; all six HTML/LibreOffice render pairs were visually inspected.
+- The fidelity fixture retained preformatted text, tracking, thin lines, connected rotated marks, native groups and the translucent overlay. The demo still shows renderer/font-metric and gradient differences; this is not pixel-identical conversion.
+- Microsoft PowerPoint and interactive editing were not tested. The next integration step is review/merge of the fork PR before connecting any presentation workflow or deployed environment.
+
+### Independent review fixes
+
+The review found missing SVG pictures, over-eager image preparation, lost mixed-text borders/inline artwork, incorrect multiline flex placement and unchecked font-size bounds. Regression coverage now exercises these cases, including inactive slides, source selection, nested inline artwork and representable font-size boundaries.
+
+A separate two-slide HTML → PPTX → LibreOffice smoke was visually inspected: the border, inline marker, centered multiline text and SVG picture survived. The first comparison render exceeded its 60-second timeout; rendering the existing PPTX again with an isolated LibreOffice profile succeeded. Microsoft PowerPoint remains untested.
 
 ## License
 
-MIT
+[MIT](LICENSE). Original work: Copyright (c) 2026 Design Arena. This fork retains the original attribution and license.

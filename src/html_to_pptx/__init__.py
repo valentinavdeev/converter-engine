@@ -21,4 +21,4 @@ from importlib.metadata import version
 from html_to_pptx.converter import convert, extract_measurements, render_pptx
 
 __all__ = ["convert", "extract_measurements", "render_pptx"]
-__version__ = version("html-to-pptx")
+__version__ = version("converter-engine")

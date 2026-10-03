@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local conversion artifacts, credentials and browser state
+outputs/
+output/
+results/
+.smoke/
+playwright-report/
+test-results/
+.env.*
+*.pptx
+*.pdf

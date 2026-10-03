@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><title>HTML/PPTX fidelity regression</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif}.slide{position:relative;width:1920px;height:1080px;background:#e5edf4;overflow:hidden}.text{position:absolute;font-family:Arial,sans-serif;white-space:pre;line-height:1;font-size:50px;letter-spacing:-1.5px}.group{position:absolute;left:80px;top:120px;width:800px;height:700px}.card{position:absolute;inset:0;background:white;border-radius:30px}.line{position:absolute;height:.5px;background:#354552;transform-origin:0 50%}.tick{height:3px;background:#169c46}.bar{position:absolute;left:80px;top:300px;width:100px;height:250px;border-radius:8px 8px 0 0;background:linear-gradient(to bottom,#b9efdf,#3ec79f)}.art{position:absolute;left:1000px;top:120px;width:800px;height:700px;background:linear-gradient(90deg,#17416f 0%,#17416f 50%,#d77b23 50%,#d77b23 100%)}.overlay{position:absolute;left:1050px;top:170px;width:700px;height:600px;background:rgba(255,255,255,.3);border:1.5px solid white;border-radius:30px}.nested{position:absolute;left:300px;top:400px;width:260px;height:160px}.nested div{position:absolute;width:260px;height:160px;background:#eef4e0;border-radius:12px}.nested span{position:absolute;left:15px;top:35px;font:32px/1 Arial;white-space:pre}
+</style>
+<div class="slide">
+<div role="group" aria-label="Metric group" class="group"><div class="card"></div>
+<span class="text" style="left:40px;top:40px">22,7</span><span class="text" style="left:144px;top:40px;font-size:26px;letter-spacing:0"> %</span>
+<span class="text" style="left:40px;top:110px;font-size:34px;letter-spacing:-1px">Кириллица: длинный заголовок</span>
+<span class="text" style="left:40px;top:170px;font-size:30px;letter-spacing:0"> A  B 
+ C </span>
+<div class="bar"></div><i class="line" style="left:40px;top:580px;width:720px"></i><i class="line" style="left:230px;top:300px;width:280px;transform:rotate(90deg)"></i>
+<i class="line tick" style="left:520px;top:310px;width:22.627417px;transform:rotate(45deg)"></i><i class="line tick" style="left:536px;top:326px;width:42.426407px;transform:rotate(-45deg)"></i>
+<div role="group" aria-label="Nested component" class="nested"><div></div><span>Nested text</span></div>
+</div>
+<div class="art"></div><div class="overlay"></div><span class="text" style="left:1110px;top:230px;color:white">~5–7%</span>
+</div></html>
