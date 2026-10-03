@@ -93,13 +93,13 @@ Use a fixed 1920×1080 CSS-pixel canvas per `.slide`. The resulting PPTX is 13�
 
 - Normal block, flex and grid layout are measured in the browser. Slide activation preserves authored display rules; it does not force every slide into flex. Prefer a shallow tree and explicit dimensions where they matter.
 - Absolute positioning is supported, but do not assume a tightly measured browser text box has identical Office metrics.
-- Text remains native. Authored sizes are retained instead of automatically shrinking them. Fix overflow in HTML; changing text inside PowerPoint does not rerun HTML layout.
+- Text remains native. Authored sizes are retained instead of automatically shrinking them. The representable range is 1–4000pt (2–8000 CSS px at this slide scale); out-of-range sizes fail with element/run context instead of silently clamping. Fix overflow in HTML; changing text inside PowerPoint does not rerun HTML layout.
 - CSS tracking, preformatted spaces/line breaks, mixed inline text and basic alignment are retained. Use fonts installed in both the browser environment and the target viewer; family substitutions remain, fonts are not embedded automatically.
 - `role="group"` or `data-pptx-group` marks a native component group. `aria-label` or `data-pptx-group` supplies its name. Ordinary layout wrappers do not automatically become groups.
 - Positive fractional-size rules are retained. Uniform rounded rectangles and equal rounded top corners with square bottoms have native geometry.
 - Solid fills, borders and supported linear gradients retain native alpha. Overlays are not automatically baked into underlying images. Default Office theme shadows are disabled; a simple authored outer shadow is supported.
 - 2D rotations account for CSS `transform-origin`; skew/reflection/3D transforms are rejected. Arbitrary transformations are not supported.
-- Local/base64 `<img>` sources become pictures. Inline SVG and conic gradients become raster images, not editable vector diagrams. `background-image: url(...)` is unsupported.
+- Local/base64 `<img>` sources become pictures. Local/embedded SVG image sources, inline SVG and conic gradients become raster images, not editable vector diagrams. Hidden/outside-slide image placeholders are ignored; images on initially inactive exported slides are prepared after activation. `background-image: url(...)` is unsupported.
 
 ### Linear gradients
 
@@ -157,6 +157,12 @@ For a browser installation contained inside the virtual environment, set `PLAYWR
 - The installed comparison CLI converted the one-slide fidelity fixture and the five-slide upstream demo; all six HTML/LibreOffice render pairs were visually inspected.
 - The fidelity fixture retained preformatted text, tracking, thin lines, connected rotated marks, native groups and the translucent overlay. The demo still shows renderer/font-metric and gradient differences; this is not pixel-identical conversion.
 - Microsoft PowerPoint and interactive editing were not tested. The next integration step is review/merge of the fork PR before connecting any presentation workflow or deployed environment.
+
+### Independent review fixes
+
+The review found missing SVG pictures, over-eager image preparation, lost mixed-text borders/inline artwork, incorrect multiline flex placement and unchecked font-size bounds. Regression coverage now exercises these cases, including inactive slides, source selection, nested inline artwork and representable font-size boundaries.
+
+A separate two-slide HTML → PPTX → LibreOffice smoke was visually inspected: the border, inline marker, centered multiline text and SVG picture survived. The first comparison render exceeded its 60-second timeout; rendering the existing PPTX again with an isolated LibreOffice profile succeeded. Microsoft PowerPoint remains untested.
 
 ## License
 

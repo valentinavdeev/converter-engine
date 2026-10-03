@@ -142,6 +142,33 @@ _SLIDE_STATE_JS = """
 """
 
 
+_SLIDE_IMAGES_JS = """
+    function participatingSlideImages(slide) {
+        const slideRect = slide.getBoundingClientRect();
+        return Array.from(slide.querySelectorAll('img')).filter(img => {
+            for (let ancestor = img; ancestor; ancestor = ancestor.parentElement) {
+                const style = getComputedStyle(ancestor);
+                if (style.display === 'none' || style.visibility === 'hidden' ||
+                    style.visibility === 'collapse' || parseFloat(style.opacity) === 0) {
+                    return false;
+                }
+            }
+            // Measurement prunes a hidden, empty or off-slide wrapper before
+            // visiting its children, even if a positioned child extends out.
+            for (let ancestor = img; ancestor !== slide; ancestor = ancestor.parentElement) {
+                const rect = ancestor.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0 ||
+                    rect.right <= slideRect.left || rect.bottom <= slideRect.top ||
+                    rect.left >= slideRect.right || rect.top >= slideRect.bottom) {
+                    return false;
+                }
+            }
+            return true;
+        });
+    }
+"""
+
+
 EXTRACTION_JS = """
 () => {
 """ + _SLIDE_STATE_JS + """
@@ -152,6 +179,11 @@ EXTRACTION_JS = """
         'span','strong','em','b','i','a','code','mark','sub','sup',
         'small','u','s','del','abbr','cite','q','time','var','kbd',
     ]);
+
+    function sourceSelector(el) {
+        return el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
+            Array.from(el.classList).map(name => '.' + name).join('');
+    }
 
     function normalizeText(text, whiteSpace) {
         text = text.replace(/\\r\\n?/g, '\\n');
@@ -182,6 +214,7 @@ EXTRACTION_JS = """
             const gradient = (fillColor === 'transparent' || fillColor === 'rgba(0, 0, 0, 0)')
                 && childBgImage && childBgImage.includes('gradient');
             const properties = {
+                sourceSelector: sourceSelector(parent),
                 color: cs.color,
                 fontSize: parseFloat(cs.fontSize),
                 fontFamily: cs.fontFamily,
@@ -420,6 +453,7 @@ EXTRACTION_JS = """
 
         const data = {
             tag: tag,
+            sourceSelector: sourceSelector(el),
             x: relX,
             y: relY,
             width: rect.width,
@@ -1219,6 +1253,26 @@ def _count_elements(elements: list[dict]) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _font_size_pt(el: dict, run_data: dict | None = None) -> float:
+    """Reject authored sizes outside the native PPTX range, never resize them."""
+    source = run_data if run_data is not None else el
+    size_px = source.get("fontSize", el.get("fontSize", 20))
+    size_pt = size_px * CSS_PX_TO_PT
+    if not math.isfinite(size_pt) or not 1 <= size_pt <= 4000:
+        selector = source.get("sourceSelector") or el.get("sourceSelector") or el.get("tag", "element")
+        text = source.get("text", "")[:80]
+        raise ValueError(
+            f"Unrepresentable font size {size_px:g} CSS px ({size_pt:g} pt) "
+            f"at {selector}, text {text!r}, element position "
+            f"({el.get('x', 0):g}, {el.get('y', 0):g}) CSS px. "
+            f"Native PPTX text requires 1–4000 pt "
+            f"({1 / CSS_PX_TO_PT:g}–{4000 / CSS_PX_TO_PT:g} CSS px at this slide scale). "
+            "Change font-size in the HTML or fontSize in the measurements; "
+            "authored sizes are not clamped or shrunk."
+        )
+    return size_pt
+
+
 def _apply_font(
     run,
     *,
@@ -1439,16 +1493,20 @@ def _text_box_layout(
     h_in = height_px * PIXELS_TO_INCHES_Y
     text_el["paddingTop"] = 0
     text_el["paddingBottom"] = 0
+    # The measured union also locates multiline flex/grid text, whose anonymous
+    # text item can be far from the container's left edge. Retain paragraph
+    # alignment inside that union so shorter centered/right-aligned lines keep
+    # their shared center/right edge instead of all becoming left-aligned.
+    width_px = geometry["width"]
     if line_count == 1:
-        # A no-wrap frame must also accommodate the font's untracked advance:
-        # some importers lay out before applying negative DrawingML tracking.
-        width_px = max(geometry["width"], geometry.get("unspacedWidth", 0))
-        x_in += geometry["x"] * PIXELS_TO_INCHES_X
-        w_in = max(width_px * PIXELS_TO_INCHES_X, 1 / 914400)
-        text_el["paddingLeft"] = 0
-        text_el["paddingRight"] = 0
+        # Some importers lay out before applying negative DrawingML tracking.
+        width_px = max(width_px, geometry.get("unspacedWidth", 0))
         text_el["textAlign"] = "left"
-        text_el["display"] = "block"
+    x_in += geometry["x"] * PIXELS_TO_INCHES_X
+    w_in = max(width_px * PIXELS_TO_INCHES_X, 1 / 914400)
+    text_el["paddingLeft"] = 0
+    text_el["paddingRight"] = 0
+    text_el["display"] = "block"
     rotation = el.get("rotation", 0) or 0
     if rotation:
         angle = math.radians(rotation)
@@ -1899,7 +1957,7 @@ def _render_text_element(
     elif transform == "capitalize":
         text = text.title()
 
-    font_size_pt = el.get("fontSize", 20) * CSS_PX_TO_PT
+    font_size_pt = _font_size_pt(el)
 
     font_color = _resolve_font_color(el)
     font_family = _resolve_pptx_font(el.get("fontFamily", "Calibri"))
@@ -1973,6 +2031,28 @@ def _render_text_element(
                 pass
 
 
+def _is_inline_text_child(el: dict) -> bool:
+    """Match the children traversed by the browser's collectInlineRuns."""
+    return el.get("position") not in ("absolute", "fixed") and (
+        (el.get("display") or "").startswith("inline") or el.get("tag") in (
+            "br", "span", "strong", "em", "b", "i", "a", "code", "mark",
+            "sub", "sup", "small", "u", "s", "del", "abbr", "cite", "q",
+            "time", "var", "kbd",
+        )
+    )
+
+
+def _inline_artwork(el: dict) -> dict:
+    """Keep the inline visual tree, excluding text already in its parent's runs."""
+    return dict(
+        el, text="", inlineRuns=[],
+        children=[
+            _inline_artwork(child) if _is_inline_text_child(child) else child
+            for child in el.get("children", [])
+        ],
+    )
+
+
 def _render_inline_runs(
     slide,
     el: dict,
@@ -1997,6 +2077,11 @@ def _render_inline_runs(
     is_single_line = _text_is_single_line(el, text)
     if has_bg or el.get("boxShadow", "none") != "none":
         _render_bg_shape(slide, el, x_in, y_in, w_in, h_in, opacity, backdrop)
+    # Inline backgrounds/borders/images are independent native artwork. Draw
+    # them before the shared text frame, without rendering their text twice.
+    for child in el.get("children", []):
+        if _is_inline_text_child(child):
+            _render_measured_element(slide, _inline_artwork(child), backdrop, opacity)
     x_in, y_in, w_in, h_in, text_el = _text_box_layout(el, x_in, y_in, w_in, h_in)
     alignment, vertical_anchor = _resolve_alignment(text_el, is_single_line, False)
     box_holder = slide.shapes.add_textbox(
@@ -2031,7 +2116,7 @@ def _render_inline_runs(
         elif transform == "capitalize":
             text = text.title()
 
-        run_size = run_data.get("fontSize", el.get("fontSize", 20)) * CSS_PX_TO_PT
+        run_size = _font_size_pt(el, run_data)
 
         run_is_gradient = run_data.get("isGradientText", False)
         run_bg_image = run_data.get("backgroundImage", "")
@@ -2179,12 +2264,12 @@ def _render_element_content(
         return
 
     if has_inline_runs:
-        _render_inline_runs(slide, el, x_in, y_in, w_in, h_in, has_visual_bg, opacity, backdrop)
+        _render_inline_runs(
+            slide, el, x_in, y_in, w_in, h_in,
+            has_visual_bg or has_border or has_left_accent, opacity, backdrop,
+        )
         for child in children:
-            if child.get("position") in ("absolute", "fixed") or child.get("tag") not in (
-                "span", "strong", "em", "b", "i", "a", "code", "mark",
-                "sub", "sup", "small", "u", "s", "del",
-            ):
+            if not _is_inline_text_child(child):
                 _render_measured_element(slide, child, child_backdrop, opacity)
         return
 
@@ -2211,7 +2296,7 @@ def _render_element_content(
             if near_left and cright > el_left and vertically_on_line:
                 extra_left_px = max(extra_left_px, cright - el_left + 8)
         _render_text_element(
-            slide, el, x_in, y_in, w_in, h_in, has_visual_bg, opacity, backdrop,
+            slide, el, x_in, y_in, w_in, h_in, has_visual_bg or has_left_accent, opacity, backdrop,
             extra_left_px,
         )
         # Render the decorative, text-free children themselves (e.g. bullet dots).
@@ -2283,6 +2368,82 @@ async def _rasterize_inline_svgs(page, measurements: list[dict]) -> None:
                 await slide_state.dispose()
 
 
+async def _prepare_slide_images(page) -> None:
+    """Embed and decode only images visible when their exported slide is active.
+
+    SVG image sources are rasterized at their intrinsic size, before measurement,
+    so picture geometry, CSS transforms, opacity and object-fit remain native.
+    """
+    slide_state = await page.evaluate_handle(
+        "() => {" + _SLIDE_STATE_JS
+        + "return captureSlideState(document.querySelectorAll('.slide'));}"
+    )
+    image_data = {}
+    try:
+        slide_count = await page.locator(".slide").count()
+        for index in range(slide_count):
+            await slide_state.evaluate("(state, index) => state.show(index)", index)
+            # Let responsive source selection react to the newly active layout.
+            await page.evaluate("() => new Promise(requestAnimationFrame)")
+            images = await page.evaluate_handle(
+                "() => {" + _SLIDE_IMAGES_JS
+                + "return participatingSlideImages(document.querySelectorAll('.slide')["
+                + str(index) + "]);}"
+            )
+            try:
+                sources = await images.evaluate(
+                    "images => images.map(img => img.currentSrc || img.src)"
+                )
+                for source in sources:
+                    if source.startswith("data:image/") or source in image_data:
+                        continue
+                    url = urlsplit(source)
+                    if url.scheme != "file" or url.netloc not in ("", "localhost"):
+                        raise ValueError(
+                            "Unsupported image source (embed a data URI or use a local file): "
+                            + source
+                        )
+                    image_path = Path(unquote(url.path))
+                    mime = mimetypes.guess_type(image_path.name)[0]
+                    if not mime or not mime.startswith("image/"):
+                        raise ValueError(f"Unsupported image type: {image_path}")
+                    image_data[source] = (
+                        f"data:{mime};base64,"
+                        + base64.b64encode(image_path.read_bytes()).decode("ascii")
+                    )
+                await images.evaluate(
+                    """async (images, imageData) => {
+                        await Promise.all(images.map(async img => {
+                            const source = img.currentSrc || img.src;
+                            const selected = imageData[source] || source;
+                            img.removeAttribute('srcset');
+                            const picture = img.closest('picture');
+                            if (picture) {
+                                picture.querySelectorAll('source').forEach(source => source.remove());
+                            }
+                            img.src = selected;
+                            await img.decode();
+                            if (/^data:image\\/svg\\+xml(?:[;,])/i.test(selected)) {
+                                const canvas = document.createElement('canvas');
+                                canvas.width = img.naturalWidth;
+                                canvas.height = img.naturalHeight;
+                                canvas.getContext('2d').drawImage(img, 0, 0);
+                                img.src = canvas.toDataURL('image/png');
+                                await img.decode();
+                            }
+                        }));
+                    }""",
+                    image_data,
+                )
+            finally:
+                await images.dispose()
+    finally:
+        try:
+            await slide_state.evaluate("state => state.restore()")
+        finally:
+            await slide_state.dispose()
+
+
 async def extract_measurements(html_path: str) -> list[dict]:
     """Open an HTML slide deck in headless Chromium and measure every element.
 
@@ -2337,36 +2498,7 @@ async def extract_measurements(html_path: str) -> list[dict]:
             timeout=PLAYWRIGHT_TIMEOUT_MS,
         )
         await page.evaluate("() => document.fonts.ready")
-        image_sources = await page.evaluate(
-            "() => Array.from(document.images, img => img.currentSrc || img.src)"
-        )
-        image_data = {}
-        for source in image_sources:
-            if source.startswith("data:image/"):
-                continue
-            url = urlsplit(source)
-            if url.scheme != "file" or url.netloc not in ("", "localhost"):
-                raise ValueError(f"Unsupported image source (embed a data URI or use a local file): {source}")
-            image_path = Path(unquote(url.path))
-            mime = mimetypes.guess_type(image_path.name)[0]
-            if not mime or not mime.startswith("image/"):
-                raise ValueError(f"Unsupported image type: {image_path}")
-            image_data[source] = f"data:{mime};base64," + base64.b64encode(image_path.read_bytes()).decode("ascii")
-        await page.evaluate(
-            """async imageData => {
-                await Promise.all(Array.from(document.images, async img => {
-                    const source = img.currentSrc || img.src;
-                    if (imageData[source]) {
-                        img.removeAttribute('srcset');
-                        const picture = img.closest('picture');
-                        if (picture) picture.querySelectorAll('source').forEach(source => source.remove());
-                        img.src = imageData[source];
-                    }
-                    await img.decode();
-                }));
-            }""",
-            image_data,
-        )
+        await _prepare_slide_images(page)
         await page.evaluate("() => document.fonts.ready")
 
         measurements = await page.evaluate(EXTRACTION_JS)

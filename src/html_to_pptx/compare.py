@@ -36,7 +36,7 @@ SLIDE_HEIGHT_PX = 1080
 async def screenshot_html_slides(html_path: Path, out_dir: Path) -> list[Path]:
     """Screenshot each <section class="slide"> in the HTML file."""
     from playwright.async_api import async_playwright
-    from html_to_pptx.converter import _SLIDE_STATE_JS
+    from html_to_pptx.converter import _SLIDE_IMAGES_JS, _SLIDE_STATE_JS
 
     source_uri = html_path.resolve().as_uri()
     screenshots: list[Path] = []
@@ -51,7 +51,6 @@ async def screenshot_html_slides(html_path: Path, out_dir: Path) -> list[Path]:
         await page.route("https://**/*", lambda route: route.abort())
         await page.goto(source_uri, wait_until="networkidle", timeout=30_000)
         await page.evaluate("() => document.fonts.ready")
-        await page.evaluate("() => Promise.all(Array.from(document.images, image => image.decode()))")
 
         slide_count = await page.evaluate(
             "document.querySelectorAll('.slide').length"
@@ -68,6 +67,13 @@ async def screenshot_html_slides(html_path: Path, out_dir: Path) -> list[Path]:
         try:
             for i in range(slide_count):
                 await state.evaluate("(state, index) => state.show(index)", i)
+                await page.evaluate(
+                    "async index => {" + _SLIDE_IMAGES_JS +
+                    "await new Promise(requestAnimationFrame);"
+                    "const slide = document.querySelectorAll('.slide')[index];"
+                    "await Promise.all(participatingSlideImages(slide).map(image => image.decode()));"
+                    "}", i,
+                )
                 out_path = out_dir / f"html_slide_{i}.png"
                 await page.locator(".slide").nth(i).screenshot(path=str(out_path))
                 screenshots.append(out_path)
