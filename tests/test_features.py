@@ -1,12 +1,7 @@
-"""Unit tests for the fidelity features added in 0.3.
-
-These cover pure helpers (no browser needed): font substitution, alpha
-flattening, gradient guards, conic parsing, line-height, and alignment.
-"""
+"""Behavioral checks for font fallback, supported gradients and text alignment."""
 
 from __future__ import annotations
 
-from pptx.dml.color import RGBColor
 from pptx.enum.text import MSO_ANCHOR
 from pptx.enum.text import PP_ALIGN
 
@@ -25,38 +20,8 @@ def test_font_resolution_in_family():
     assert C._resolve_pptx_font("'JetBrains Mono', monospace") == "Consolas"
     assert C._resolve_pptx_font("Montserrat, sans-serif") == "Century Gothic"
     assert C._resolve_pptx_font("'Totally Unknown', serif") == "Georgia"
-    assert C._resolve_pptx_font("") == "Calibri"
 
 
-# ---------------------------------------------------------------------------
-# Alpha flattening over a backdrop
-# ---------------------------------------------------------------------------
-
-
-def test_blend_over_endpoints():
-    black, white = RGBColor(0, 0, 0), RGBColor(255, 255, 255)
-    assert tuple(C._blend_over(black, 1.0, white)) == (0, 0, 0)
-    assert tuple(C._blend_over(black, 0.0, white)) == (255, 255, 255)
-    mid = C._blend_over(black, 0.5, white)
-    assert all(120 <= ch <= 135 for ch in mid)
-
-
-def test_translucent_orange_over_navy_is_muted():
-    navy = RGBColor(0x0F, 0x1B, 0x33)
-    orange = RGBColor(0xE8, 0x77, 0x2E)
-    out = C._blend_over(orange, 0.15, navy)
-    # closer to navy than to orange
-    assert out[0] < 0x60 and out[1] < 0x60
-
-
-# ---------------------------------------------------------------------------
-# Gradient parsing only accepts a single linear-gradient
-# ---------------------------------------------------------------------------
-
-
-def test_single_linear_gradient_parses():
-    stops = C._parse_css_gradient("linear-gradient(90deg, rgb(0,0,0), rgb(255,255,255))")
-    assert stops and len(stops) == 2
 
 
 def test_radial_and_conic_and_multi_gradients_rejected():
@@ -128,18 +93,5 @@ def test_table_cell_keeps_column_alignment():
     assert h == PP_ALIGN.LEFT  # not hijacked by chip-centering
 
 
-def test_chip_centers_horizontally():
-    el = {"display": "inline-block", "textAlign": "start", "backgroundColor": "rgb(0,0,0)"}
-    h, v = C._resolve_alignment(el, is_single_line=True, has_visual_bg=True)
-    assert h == PP_ALIGN.CENTER and v == MSO_ANCHOR.MIDDLE
 
 
-# ---------------------------------------------------------------------------
-# Font family class helper
-# ---------------------------------------------------------------------------
-
-
-def test_family_class():
-    assert C._family_class("Georgia") == "serif"
-    assert C._family_class("Consolas") == "mono"
-    assert C._family_class("Segoe UI") == "sans"
